@@ -4,8 +4,11 @@ import java.util.concurrent.atomic.AtomicLong;
 
 public class Segment {
     private AtomicLong value = new AtomicLong(0);
+    // 当前segment允许的最大值
     private volatile long max;
+    // 步长
     private volatile int step;
+    // 当前segment所属的segmentBuffer
     private SegmentBuffer buffer;
 
     public Segment(SegmentBuffer buffer) {

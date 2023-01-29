@@ -26,6 +26,7 @@ public class IDAllocDaoImpl implements IDAllocDao {
         sqlSessionFactory = new SqlSessionFactoryBuilder().build(configuration);
     }
 
+    // 获取所有的业务key对应的发号配置
     @Override
     public List<LeafAlloc> getAllLeafAllocs() {
         SqlSession sqlSession = sqlSessionFactory.openSession(false);
@@ -36,6 +37,7 @@ public class IDAllocDaoImpl implements IDAllocDao {
         }
     }
 
+    // 更新数据库的最大id值, 并返回LeafAlloc
     @Override
     public LeafAlloc updateMaxIdAndGetLeafAlloc(String tag) {
         SqlSession sqlSession = sqlSessionFactory.openSession();

@@ -37,8 +37,11 @@ public class SegmentIDGenImpl implements IDGen {
      * 一个Segment维持时间为15分钟
      */
     private static final long SEGMENT_DURATION = 15 * 60 * 1000L;
+    // 异步更新任务
     private ExecutorService service = new ThreadPoolExecutor(5, Integer.MAX_VALUE, 60L, TimeUnit.SECONDS, new SynchronousQueue<Runnable>(), new UpdateThreadFactory());
+    // 标记segmentBuffer是否已经初始化完毕
     private volatile boolean initOK = false;
+    // tag : SegmentBuffer
     private Map<String, SegmentBuffer> cache = new ConcurrentHashMap<String, SegmentBuffer>();
     private IDAllocDao dao;
 
@@ -62,6 +65,7 @@ public class SegmentIDGenImpl implements IDGen {
         // 确保加载到kv后才初始化成功
         updateCacheFromDb();
         initOK = true;
+        // 定时1min同步一次db和cache
         updateCacheFromDbAtEveryMinute();
         return initOK;
     }
@@ -132,12 +136,14 @@ public class SegmentIDGenImpl implements IDGen {
 
     @Override
     public Result get(final String key) {
+        // 如果segmentIDGen还未初始化完成, 则不能使用
         if (!initOK) {
             return new Result(EXCEPTION_ID_IDCACHE_INIT_FALSE, Status.EXCEPTION);
         }
         if (cache.containsKey(key)) {
             SegmentBuffer buffer = cache.get(key);
             if (!buffer.isInitOk()) {
+                // double check
                 synchronized (buffer) {
                     if (!buffer.isInitOk()) {
                         try {
@@ -160,15 +166,18 @@ public class SegmentIDGenImpl implements IDGen {
         SegmentBuffer buffer = segment.getBuffer();
         LeafAlloc leafAlloc;
         if (!buffer.isInitOk()) {
+            // 第一次进行db初始化时触发
             leafAlloc = dao.updateMaxIdAndGetLeafAlloc(key);
             buffer.setStep(leafAlloc.getStep());
             buffer.setMinStep(leafAlloc.getStep());//leafAlloc中的step为DB中的step
         } else if (buffer.getUpdateTimestamp() == 0) {
+            // 第二次进行db初始化时触发
             leafAlloc = dao.updateMaxIdAndGetLeafAlloc(key);
             buffer.setUpdateTimestamp(System.currentTimeMillis());
             buffer.setStep(leafAlloc.getStep());
             buffer.setMinStep(leafAlloc.getStep());//leafAlloc中的step为DB中的step
         } else {
+            // 第三次及之后进行触发, 动态计算step
             long duration = System.currentTimeMillis() - buffer.getUpdateTimestamp();
             int nextStep = buffer.getStep();
             if (duration < SEGMENT_DURATION) {
@@ -204,6 +213,9 @@ public class SegmentIDGenImpl implements IDGen {
             buffer.rLock().lock();
             try {
                 final Segment segment = buffer.getCurrent();
+
+                // 检查是否需要开启一个线程去准备下一个号段
+                // 1. 如果另一个segment还没有准备好, 并且当前segment使用已经超过10%, 并且没有其他线程初始化segment
                 if (!buffer.isNextReady() && (segment.getIdle() < 0.9 * segment.getStep()) && buffer.getThreadRunning().compareAndSet(false, true)) {
                     service.execute(new Runnable() {
                         @Override
@@ -218,6 +230,7 @@ public class SegmentIDGenImpl implements IDGen {
                                 logger.warn(buffer.getKey() + " updateSegmentFromDb exception", e);
                             } finally {
                                 if (updateOk) {
+                                    // 更新segmentBuffer的内容时, 需要获取到写锁
                                     buffer.wLock().lock();
                                     buffer.setNextReady(true);
                                     buffer.getThreadRunning().set(false);
@@ -229,18 +242,25 @@ public class SegmentIDGenImpl implements IDGen {
                         }
                     });
                 }
+
                 long value = segment.getValue().getAndIncrement();
+                // 如果获取的号码在允许范围内, 则正确返回
                 if (value < segment.getMax()) {
                     return new Result(value, Status.SUCCESS);
                 }
             } finally {
                 buffer.rLock().unlock();
             }
+
+            // 等待线程更新成功
             waitAndSleep(buffer);
+
+            // 切换segment
             buffer.wLock().lock();
             try {
                 final Segment segment = buffer.getCurrent();
                 long value = segment.getValue().getAndIncrement();
+                // 重复判断, 类似double check思想, 防止已经有线程完成了切换
                 if (value < segment.getMax()) {
                     return new Result(value, Status.SUCCESS);
                 }

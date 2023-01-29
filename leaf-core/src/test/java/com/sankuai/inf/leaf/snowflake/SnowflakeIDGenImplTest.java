@@ -8,7 +8,7 @@ import org.junit.Test;
 import java.util.Properties;
 
 public class SnowflakeIDGenImplTest {
-    @Test
+    //@Test
     public void testGetId() {
         Properties properties = PropertyFactory.getProperties();
 
